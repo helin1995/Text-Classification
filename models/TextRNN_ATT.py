@@ -31,6 +31,7 @@ class Config():
         self.pad_size = 32                       # 每句话处理成的长度（短填长切）
         self.learning_rate = 1e-3                # 学习率
         self.hidden_size = 128                   # lstm隐藏层特征数
+        self.da = 64                             # 计算attention向量时参数的维度
         self.num_layers = 2                      # lstm层数
         self.embed = 300                         # 词向量的维度
 
@@ -43,20 +44,22 @@ class Model(nn.Module):
             self.embedding = nn.Embedding(config.n_vocab, config.embed, padding_idx=config.n_vocab - 1)
         self.lstm = nn.LSTM(config.embed, config.hidden_size, config.num_layers,
                             bidirectional=True, batch_first=True, dropout=config.dropout)
-        self.fc1 = nn.Linear(config.hidden_size * 2, config.hidden_size)
-        self.fc2 = nn.Linear(config.hidden_size, config.num_classes)
-        self.w = nn.Parameter(torch.randn(config.hidden_size * 2, 1))
+        self.fc = nn.Linear(config.hidden_size * 2, config.num_classes)
+        self.W1 = nn.Parameter(torch.randn(config.da, config.hidden_size * 2))
+        self.w2 = nn.Parameter(torch.randn(1, config.da))
 
     def forward(self, x):
         x, _ = x
         out = self.embedding(x)
-        out, _ = self.lstm(out)
-        M = torch.tanh(out)
-        alpha = F.softmax(torch.matmul(M, self.w), dim=0)
-        pages, rows, cols = alpha.shape
-        alpha = alpha.view(pages, cols, rows)
-        r = torch.matmul(alpha, out).squeeze()
-        out = self.fc1(r)
-        out = F.relu(out)
-        out = self.fc2(out)
+        out, _ = self.lstm(out)  # [128, 32, 256]
+        out_T = out.permute(0, 2, 1)  # [128, 256, 32]
+        result = torch.matmul(self.W1, out_T)  # [128, 64, 32]
+        result = torch.tanh(result)  # [128, 64, 32]
+        result = torch.matmul(self.w2, result)  # [128, 1, 32]
+        result = result.squeeze()  # [128, 32]
+        a = F.softmax(result, dim=1)  # [128, 32]
+        a = a.unsqueeze(1)  # [128, 1, 32]
+        M = torch.matmul(a, out)  # [128, 1, 256]
+        M = M.squeeze()  # [128, 256]
+        out = self.fc(M)  # [128, 10]
         return out
